@@ -15,8 +15,8 @@ Deno.serve(async (req) => {
     }
 
     try {
-      // 1. Cinesubz එකට Request යැවීම (ශක්තිමත් Headers සමග)
-      const searchUrl = `https://cinesubz.co/?s=${encodeURIComponent(query)}`;
+      // 1. Cinesubz.lk (අලුත් ඩොමේන් එක) වෙත Request යැවීම
+      const searchUrl = `https://cinesubz.lk/?s=${encodeURIComponent(query)}`;
       
       const response = await fetch(searchUrl, {
         headers: {
@@ -28,54 +28,45 @@ Deno.serve(async (req) => {
       const html = await response.text();
       const $ = cheerio.load(html);
       const results = [];
-      const uniqueLinks = new Set(); // එකම ෆිල්ම් එක දෙපාරක් වැටෙන එක වලක්වන්න
 
-      // 2. අලුත් ක්‍රමය: "Universal Scraper" Logic
-      // අපි විශේෂ නම් (Classes) හොයන්නේ නෑ. අපි හොයන්නේ "Link එකක් ඇතුලේ තියෙන පින්තූර" විතරයි.
-      $('a').each((index, element) => {
-        const link = $(element).attr('href');
-        const imgTag = $(element).find('img');
+      // 2. අලුත් Selector Logic එක (Cinesubz.lk සඳහා)
+      // Cinesubz LK එකේ චිත්‍රපට පෙන්නන්නේ "article" හෝ "div" ඇතුලේ class="result-item" වගේ නමකින්.
+      // අපි පොදු ක්‍රමයක් (Generic Method) පාවිච්චි කරමු.
+
+      $('article, .item, .result-item, .post').each((index, element) => {
+        // Title එක ගන්න
+        const titleTag = $(element).find('h2 a, h3 a, .title a');
+        const title = titleTag.text().trim();
+        const link = titleTag.attr('href');
         
-        // Link එකක් සහ Image එකක් තියෙනවා නම් විතරක් ගන්න
-        if (link && imgTag.length > 0) {
-          
-          // Image එක ගන්න (src හෝ data-src හෝ srcset)
-          let image = imgTag.attr('src');
-          if (!image || image.includes('base64')) image = imgTag.attr('data-src');
-          
-          // Title එක ගන්න (Image එකේ alt එකෙන් හෝ Link එකේ title එකෙන්)
-          let title = imgTag.attr('alt') || $(element).attr('title') || $(element).text().trim();
+        // Image එක ගන්න (Lazy load images අල්ලගන්න)
+        let image = $(element).find('img').attr('src');
+        if (!image || image.includes('base64')) {
+            image = $(element).find('img').attr('data-src');
+        }
 
-          // පෙරහන (Filter): මේක ඇත්තටම Movie එකක්ද කියලා බලන්න
-          // 1. Link එකේ "movies" හෝ "tvshows" කෑල්ල තියෙන්න ඕනේ.
-          // 2. නැත්නම්, Title එකේ අපි Search කරපු වචනේ තියෙන්න ඕනේ.
-          const isMovieLink = link.includes('/movies/') || link.includes('/tvshows/') || link.includes('/episodes/');
-          const isRelevantTitle = title && title.toLowerCase().includes(query.toLowerCase());
+        // විස්තර (IMDB, Year)
+        const rating = $(element).find('.rating, .imdb').text().trim() || "N/A";
+        const year = $(element).find('.year, .meta-date').text().trim() || "N/A";
 
-          // නරක Results අයින් කිරීම (Logos, User icons වගේ දේවල්)
-          if ((isMovieLink || isRelevantTitle) && !uniqueLinks.has(link) && title.length > 2) {
-            
-            // අවුරුද්ද (Year) සහ Rating හොයන්න පොඩි ට්‍රයි එකක්
-            // (මේවා නැති වුනාට කමක් නෑ, Title/Link/Image තමයි වැදගත්)
-            const parent = $(element).closest('div, article, li');
-            const year = parent.text().match(/\d{4}/)?.[0] || "N/A"; 
-            const rating = parent.find('.imdb, .rating, .score').text().trim() || "N/A";
+        // Download Link එක ගැන විශේෂ සටහනක්:
+        // Search Result එකේ කෙලින්ම Download Button එක නෑ. තියෙන්නේ ෆිල්ම් එකේ Page එකට Link එක.
+        // ඒ Link එකට ගියාම තමයි Download කරන්න පුළුවන්. 
+        // අපි මෙතන ඒ Link එක "movie_url" ලෙස දෙනවා.
 
-            results.push({
-              title: title,
-              image: image || "No Image",
-              link: link,
-              rating: rating,
-              year: year,
-              source: "Cinesubz"
-            });
-            
-            uniqueLinks.add(link); // මේ Link එක ආයේ ගන්න එපා
-          }
+        if (title && link) {
+          results.push({
+            title: title,
+            image: image || "https://via.placeholder.com/150", // Image එකක් නැත්නම් බොරු එකක් දාන්න
+            imdb_rating: rating,
+            year: year,
+            movie_url: link, // මේකට ගිහින් තමයි Download කරන්න ඕනේ
+            status: "Found"
+          });
         }
       });
 
-      // 3. ප්‍රතිඵල යැවීම
+      // 3. Results යැවීම
       if (results.length > 0) {
         return new Response(
           JSON.stringify({
@@ -87,15 +78,18 @@ Deno.serve(async (req) => {
           { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } }
         );
       } else {
-        // තාම වැඩ නැත්නම් විතරක් මේක එනවා
+        // Debug Info (වැඩ කරන්නේ නැත්නම් හේතුව හොයාගන්න)
         return new Response(
           JSON.stringify({
             status: 'error',
-            message: 'No movies found.',
+            message: 'Movies not found. Check debug info.',
             debug_info: {
+                target_site: "cinesubz.lk",
                 page_title: $('title').text(),
-                // HTML එකේ පලවෙනි Link 5 අපිට පෙන්නන්න (Debug කරන්න ලේසි වෙන්න)
-                first_links: $('a').slice(0, 5).map((i, el) => $(el).attr('href')).get()
+                // අහු උන HTML කෑලි ටිකක් බලමු
+                found_articles: $('article').length,
+                found_items: $('.item').length,
+                found_posts: $('.post').length
             },
             channel: '@xCHAMi_Studio'
           }, null, 2),
@@ -108,5 +102,5 @@ Deno.serve(async (req) => {
     }
   }
 
-  return new Response("API Updated v3! Use /search?q=movie_name", { status: 200 });
+  return new Response("Cinesubz API (LK Version) is Running!", { status: 200 });
 });
