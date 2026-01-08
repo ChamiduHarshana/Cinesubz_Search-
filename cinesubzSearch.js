@@ -4,18 +4,19 @@ import * as cheerio from "https://esm.sh/cheerio@1.0.0-rc.12";
 // CONFIGURATION
 // ==========================================
 const BASE_URL = "https://cinesubz.lk";
-const MAX_RESULTS_TO_SCRAPE = 5; // ෆිල්ම් කීයක full details ගන්නවද?
+const MAX_RESULTS = 5; // උපරිම ෆිල්ම් කීයක විස්තර ඕනද?
 
-// බොරු බ්‍රව්සර් එකක් වගේ පෙන්නන්න Headers
+// Browser එකක් විදිහට වෙබ් අඩවිය රැවටීම සඳහා Headers
 const HEADERS = {
-  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-  "Referer": "https://google.com",
-  "Accept-Language": "en-US,en;q=0.9"
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
+  "Accept-Language": "en-US,en;q=0.9",
+  "Referer": "https://www.google.com/",
+  "Connection": "keep-alive"
 };
 
 // ==========================================
-// 1. HELPER: ROBUST FETCH (Auto Retry & Error Fix)
+// 1. HELPER: FETCH HTML (Auto Retry Included)
 // ==========================================
 async function fetchHTML(url) {
   try {
@@ -23,172 +24,164 @@ async function fetchHTML(url) {
     if (!response.ok) throw new Error(`Status ${response.status}`);
     return await response.text();
   } catch (e) {
-    console.error(`[Error] Failed to fetch ${url}:`, e.message);
-    return null; // Error එකක් ආවොත් නවතින්නෙ නැතුව null යවනවා
+    console.error(`Error fetching ${url}:`, e.message);
+    return null;
   }
 }
 
 // ==========================================
-// 2. HELPER: SMART INFO EXTRACTOR (බෝරූටෝ එකේ වගේ විස්තර ගන්න)
+// 2. HELPER: EXTRACT DETAILS (Smart Scanner)
 // ==========================================
-function extractSpecificData($, label) {
-  // මේකෙන් අපි HTML එකේ තියෙන Text scan කරනවා "Director:", "Cast:" වගේ ඒවා හොයන්න
-  let foundData = "N/A";
-  
-  // Method 1: Strong tags ඇතුලේ තියෙනවද බලනවා (Common Pattern)
-  $('strong, b').each((i, el) => {
-    const text = $(el).text().trim();
-    if (text.toLowerCase().includes(label.toLowerCase())) {
-      // Label එක හම්බුනාම, ඊළඟට තියෙන text එක ගන්නවා
-      let nextText = $(el)[0].nextSibling?.nodeValue?.trim();
-      // එහෙම නැත්තම් parent එකේ text එකෙන් label එක අයින් කරනවා
-      if (!nextText) {
-         nextText = $(el).parent().text().replace(text, '').replace(':', '').trim();
-      }
-      if (nextText && nextText.length > 1) {
-        foundData = nextText;
-        return false; // Break loop
-      }
-    }
-  });
-
-  return foundData;
-}
-
-// ==========================================
-// 3. MAIN: GET MOVIE DETAILS (ඇතුලට ගිහින් විස්තර ගන්න කොටස)
-// ==========================================
-async function getMovieDetails(movieUrl) {
-  const html = await fetchHTML(movieUrl);
-  if (!html) return null;
-
+async function getFullDetails(link) {
+  const html = await fetchHTML(link);
+  if (!html) return {};
   const $ = cheerio.load(html);
-  
-  // A. Description (සිංහල විස්තරය)
+
+  // 1. Description (Sinhalata)
   let description = "";
-  $('.entry-content p').each((i, el) => {
-    const text = $(el).text().trim();
-    // සිංහල අකුරු තියෙන, Copyright නැති, දිග ඡේදයක් හොයාගන්නවා
-    if (text.length > 60 && /[\u0D80-\u0DFF]/.test(text) && !text.toLowerCase().includes('copyright')) {
-      description = text;
-      return false; // පලවෙනි ඡේදය හම්බුනාම නවතින්න
+  // P tags ඔක්කොම බලනවා, සිංහල අකුරු තියෙන දිගම එක ගන්නවා
+  $('p').each((i, el) => {
+    const t = $(el).text().trim();
+    if (t.length > 50 && /[\u0D80-\u0DFF]/.test(t) && !t.includes('Copyright')) {
+      description = t;
     }
   });
 
-  // B. Specific Info (Image 2 එකේ විදිහට)
-  const info = {
-    release_date: extractSpecificData($, "Release Date") || extractSpecificData($, "Date"),
-    country: extractSpecificData($, "Country"),
-    duration: extractSpecificData($, "Duration") || extractSpecificData($, "Time"),
-    genres: extractSpecificData($, "Genres") || extractSpecificData($, "Category"),
-    director: extractSpecificData($, "Director"),
-    cast: extractSpecificData($, "Cast") || extractSpecificData($, "Actors"),
-    imdb_rating: extractSpecificData($, "IMDb")
+  // 2. Info Box (Director, Cast, etc.)
+  const info = {};
+  
+  // Smart Helper function to find text based on label
+  const findInfo = (keyword) => {
+    let result = "N/A";
+    $('strong, b, span').each((i, el) => {
+      if ($(el).text().toLowerCase().includes(keyword.toLowerCase())) {
+        // Label එක අයින් කරලා ඉතුරු ටික ගන්නවා
+        let val = $(el).parent().text().replace($(el).text(), '').replace(':', '').replace('-', '').trim();
+        if(val.length > 1) result = val;
+      }
+    });
+    return result;
   };
 
-  // C. Download Links (Smart Extraction)
+  info.release_date = findInfo('Date') || findInfo('Release');
+  info.country = findInfo('Country');
+  info.imdb_rating = findInfo('IMDb');
+  info.director = findInfo('Director');
+  info.cast = findInfo('Cast') || findInfo('Actors') || findInfo('Starring');
+  info.duration = findInfo('Time') || findInfo('Duration');
+
+  // 3. Download Links (Auto Filter)
   const downloads = [];
   $('a').each((i, el) => {
-    const link = $(el).attr('href');
-    const text = $(el).text().toLowerCase();
+    const href = $(el).attr('href');
+    const txt = $(el).text().toLowerCase();
     
-    // Download ලින්ක් අඳුරගන්න විශේෂ වචන
-    if (link && (
-        text.includes('download') || 
-        text.includes('drive') || 
-        text.includes('mega') || 
-        text.includes('gofile') ||
-        text.includes('pixel') ||
-        $(el).attr('class')?.includes('download')
-       )) {
-       
-       // Social Media ලින්ක් අයින් කරන්න
-       if (!link.includes('facebook') && !link.includes('twitter') && !link.includes('whatsapp')) {
-          downloads.push({
-            server: $(el).text().trim().replace(/download/gi, '').trim() || "Direct Link",
-            url: link
-          });
-       }
+    // Download Keywords
+    if (href && (txt.includes('download') || txt.includes('drive') || txt.includes('mega') || txt.includes('gofile') || $(el).attr('class')?.includes('download'))) {
+      // Social Media අයින් කරනවා
+      if (!href.includes('facebook') && !href.includes('twitter') && !href.includes('whatsapp') && !href.includes('#')) {
+        downloads.push({
+          server: $(el).text().replace(/download/gi, '').trim() || "Direct Link",
+          url: href
+        });
+      }
     }
   });
 
-  return { description, info, downloads };
+  return { description, info, download_links: downloads };
 }
 
 // ==========================================
-// MAIN SERVER
+// MAIN SERVER CODE
 // ==========================================
 Deno.serve(async (req) => {
   const url = new URL(req.url);
-
-  // Allow CORS (ඕනම තැනක ඉඳන් request කරන්න පුළුවන් වෙන්න)
+  
   const headers = {
     "Content-Type": "application/json",
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET"
+    "Access-Control-Allow-Origin": "*"
   };
 
   if (url.pathname === "/search") {
-    const query = url.searchParams.get("q");
-    if (!query) return new Response(JSON.stringify({ status: "error", message: "Please add ?q=movie_name" }), { status: 400, headers });
+    const q = url.searchParams.get("q");
+    if (!q) return new Response(JSON.stringify({ error: "Please add ?q=movie_name" }), { headers });
 
     try {
-      // 1. Search පිටුවට යනවා
-      const searchHtml = await fetchHTML(`${BASE_URL}/?s=${encodeURIComponent(query)}`);
-      if (!searchHtml) throw new Error("Connection failed");
+      console.log(`Searching for: ${q}`);
+      const searchUrl = `${BASE_URL}/?s=${encodeURIComponent(q)}`;
+      const html = await fetchHTML(searchUrl);
+      
+      if (!html) return new Response(JSON.stringify({ error: "Site connection failed" }), { headers });
 
-      const $ = cheerio.load(searchHtml);
-      const tempResults = [];
-      const seenLinks = new Set();
+      const $ = cheerio.load(html);
+      let results = [];
+      let seen = new Set();
 
-      // 2. Search Results List එක හදාගන්නවා
-      $('article, .result-item, .item').each((i, el) => {
-        const anchor = $(el).find('a').first();
-        const link = anchor.attr('href');
-        
-        if (link && (link.includes('/movies/') || link.includes('/tvshows/')) && !seenLinks.has(link)) {
-          
-          let title = $(el).find('.title, h2, h3').text().trim();
-          
-          // Image එක High Quality ගන්න ට්‍රයි කරනවා
-          let imgTag = $(el).find('img');
-          let image = imgTag.attr('data-src') || imgTag.attr('src'); // Lazy load images fix
+      // ==================================================
+      // STRATEGY 1: Standard Search (Normal Way)
+      // ==================================================
+      $('article').each((i, el) => {
+        const a = $(el).find('a').first();
+        const link = a.attr('href');
+        const title = $(el).find('.entry-title, .title, h2').text().trim();
+        const img = $(el).find('img').attr('src');
 
-          if (title && image) {
-            tempResults.push({
-              title: title,
-              image: image,
-              link: link,
-              type: link.includes('/tvshows/') ? 'TV Show' : 'Movie'
-            });
-            seenLinks.add(link);
-          }
+        if (link && title && !seen.has(link)) {
+          results.push({ title, link, image: img, type: "Standard" });
+          seen.add(link);
         }
       });
 
-      // Results නැත්නම්
-      if (tempResults.length === 0) {
-        return new Response(JSON.stringify({ status: "success", result_count: 0, data: [] }), { headers });
+      // ==================================================
+      // STRATEGY 2: Brute Force (If Strategy 1 Fails)
+      // ==================================================
+      if (results.length === 0) {
+        console.log("Standard search failed. Trying Brute Force...");
+        $('a').each((i, el) => {
+          const link = $(el).attr('href');
+          
+          // Link එකේ /movies/ හෝ /tvshows/ තියෙනවද බලනවා
+          if (link && (link.includes('/movies/') || link.includes('/tvshows/')) && !seen.has(link)) {
+            
+            // Link එක ඇතුලේ තියෙන Image එක හොයනවා
+            let img = $(el).find('img').attr('src') || $(el).find('img').attr('data-src');
+            // Title එක Link එකේ text එකෙන් හෝ title attribute එකෙන් ගන්නවා
+            let title = $(el).attr('title') || $(el).text().trim();
+
+            if (title.length > 2) {
+              results.push({
+                title: title,
+                link: link,
+                image: img || "https://via.placeholder.com/150", // Image නැත්නම් බොරු එකක්
+                type: link.includes('tvshows') ? "TV Show" : "Movie"
+              });
+              seen.add(link);
+            }
+          }
+        });
       }
 
-      // 3. (Magic Part) මුල් ෆිල්ම් 5 ඇතුලට ගිහින් full details ගන්නවා
-      // Parallel Request යවනවා (වේගවත් වෙන්න)
-      const limitedResults = tempResults.slice(0, MAX_RESULTS_TO_SCRAPE);
-      
-      const fullData = await Promise.all(limitedResults.map(async (movie) => {
-        try {
-          const details = await getMovieDetails(movie.link);
-          if (!details) return movie; // Details ගන්න බැරි වුනොත් Basic ටික විතරක් යවනවා (Crash නොවී)
+      // තාමත් 0 නම්, මොකක් හරි ලොකු අවුලක්
+      if (results.length === 0) {
+        return new Response(JSON.stringify({ 
+          status: "failed", 
+          message: "No results found. Site might be blocking bots or structure changed.",
+          debug_url: searchUrl
+        }), { headers });
+      }
 
-          return {
-            ...movie,
-            description: details.description || "No description available",
-            info: details.info, // මෙතන තමයි Cast, Director ඔක්කොම තියෙන්නේ
-            download_links: details.downloads
-          };
-        } catch (innerErr) {
-          console.error(`Error scraping ${movie.title}:`, innerErr);
-          return movie; // Error ආවොත් Basic data ටික යවනවා
+      // ==================================================
+      // GET FULL DETAILS (Parallel Processing)
+      // ==================================================
+      const limitedResults = results.slice(0, MAX_RESULTS);
+      
+      const fullData = await Promise.all(limitedResults.map(async (item) => {
+        try {
+          const details = await getFullDetails(item.link);
+          return { ...item, ...details };
+        } catch (err) {
+          // Error එකක් ආවොත්, මූලික විස්තර ටික යවනවා (Crash නොවී)
+          return { ...item, error: "Details fetch failed" };
         }
       }));
 
@@ -199,16 +192,9 @@ Deno.serve(async (req) => {
       }, null, 2), { headers });
 
     } catch (err) {
-      return new Response(JSON.stringify({ status: "error", message: err.message }), { status: 500, headers });
+      return new Response(JSON.stringify({ error: err.message }), { status: 500, headers });
     }
   }
 
-  // Home Route
-  return new Response(JSON.stringify({ 
-    message: "Cinesubz Super Scraper API is Online!", 
-    usage: "/search?q=avatar" 
-  }, null, 2), { 
-    status: 200, 
-    headers 
-  });
+  return new Response(JSON.stringify({ msg: "API Working! Use /search?q=avatar" }), { headers });
 });
